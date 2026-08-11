@@ -1,0 +1,20 @@
+# Simulation outputs
+simv
+simv.daidir/
+csrc/
+ucli.key
+*.vpd
+*.vcd
+*.fsdb
+*.log
+*.key
+DVEfiles/
+verdiLog/
+
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
