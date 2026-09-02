@@ -1,2 +1,2 @@
 -f filelist.f
-tb/pmc_smoke_tb.v
+tb/pmc_smoke_tb.sv

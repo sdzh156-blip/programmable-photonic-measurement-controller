@@ -3,7 +3,7 @@ VCS      ?= vcs
 VCS_OPTS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 IVERILOG ?= iverilog
 
-.PHONY: compile smoke compile_iverilog smoke_iverilog static clean list
+.PHONY: list static compile smoke compile_iverilog smoke_iverilog clean
 
 list:
 	@cat filelist.f

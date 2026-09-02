@@ -1,5 +1,5 @@
-# Simulation outputs
 simv
+simv_iverilog
 simv.daidir/
 csrc/
 ucli.key
@@ -7,14 +7,6 @@ ucli.key
 *.vcd
 *.fsdb
 *.log
-*.key
 DVEfiles/
 verdiLog/
-
-# Editor / OS
-*.swp
-*.swo
-*~
-.DS_Store
-.vscode/
-.idea/
+__pycache__/

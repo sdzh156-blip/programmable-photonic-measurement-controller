@@ -1,6 +1,8 @@
-rtl/ahb_lite_slave.v
-rtl/photonic_csr.v
-rtl/timing_engine.v
-rtl/measurement_ctrl.v
-rtl/irq_ctrl.v
-rtl/photonic_ctrl_top.v
+rtl/sync2_level.sv
+rtl/timing_engine.sv
+rtl/pulse_engine.sv
+rtl/apb_slave.sv
+rtl/irq_ctrl.sv
+rtl/photonic_csr.sv
+rtl/phase_sequencer.sv
+rtl/photonic_ctrl_top.sv

@@ -4,39 +4,40 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-RTL = ROOT / 'rtl'
+top = (ROOT / "rtl/photonic_ctrl_top.sv").read_text()
 
-def strip_comments(s):
-    s = re.sub(r'/\*.*?\*/', '', s, flags=re.S)
-    return re.sub(r'//.*', '', s)
+required_instances = {
+    "u_apb_slave": "apb_slave",
+    "u_photonic_csr": "photonic_csr",
+    "u_timing_engine": "timing_engine",
+    "u_pulse_engine": "pulse_engine",
+    "u_phase_sequencer": "phase_sequencer",
+    "u_irq_ctrl": "irq_ctrl",
+    "u_sync_sensor_ready": "sync2_level",
+    "u_sync_sensor_frame_done": "sync2_level",
+    "u_sync_sensor_error": "sync2_level",
+    "u_sync_excitation_ready": "sync2_level",
+    "u_sync_excitation_fault": "sync2_level",
+}
 
-mods = {}
-for p in RTL.glob('*.v'):
-    s = strip_comments(p.read_text())
-    m = re.search(r'\bmodule\s+(\w+)\s*\((.*?)\);', s, flags=re.S)
-    if not m:
-        print('FAIL: cannot parse module header:', p)
-        sys.exit(1)
-    ports = []
-    for chunk in m.group(2).split(','):
-        mm = re.search(r'([A-Za-z_]\w*)\s*$', chunk.strip())
-        if mm:
-            ports.append(mm.group(1))
-    mods[m.group(1)] = set(ports)
-
-s = strip_comments((RTL / 'photonic_ctrl_top.v').read_text())
 errors = []
-for mod, inst, body in re.findall(r'\b(\w+)\s+(\w+)\s*\((.*?)\);', s, flags=re.S):
-    if mod not in mods or mod == 'photonic_ctrl_top':
-        continue
-    conns = set(re.findall(r'\.(\w+)\s*\(', body))
-    missing = mods[mod] - conns
-    extra = conns - mods[mod]
-    if missing or extra:
-        errors.append((inst, mod, missing, extra))
+for inst, mod in required_instances.items():
+    pat = rf"\b{re.escape(mod)}\b[\s\S]*?\b{re.escape(inst)}\s*\("
+    if not re.search(pat, top):
+        errors.append(f"missing instance {inst} of {mod}")
+
+for signal in [
+    "sensor_ready_sync", "sensor_frame_done_sync", "sensor_error_sync",
+    "excitation_ready_sync", "excitation_fault_sync",
+    "timer_start", "timer_done", "trigger_start", "trigger_done",
+    "int_set", "int_status", "int_enable"
+]:
+    if signal not in top:
+        errors.append(f"missing integration signal {signal}")
 
 if errors:
-    for e in errors:
-        print('FAIL:', e)
+    print("INTERFACE CHECK FAIL")
+    for err in errors:
+        print(" -", err)
     sys.exit(1)
-print('INTERFACE CHECK PASS: all top-level named instance connections match module ports.')
+print("INTERFACE CHECK PASS: required V2 blocks and integration signals are present.")

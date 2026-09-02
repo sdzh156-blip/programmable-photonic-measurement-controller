@@ -1,61 +1,53 @@
-# PMC CSR Register Map
+# PMC V2 Register Map
 
-All legal CSR accesses are 32-bit word-aligned AHB-Lite accesses.
+All addresses are offsets inside the PMC APB window.
 
-| Offset | Register | Access | Description |
+| Offset | Name | Access | Description |
 |---:|---|---|---|
-| `0x000` | `CTRL` | RW/W1P | `ENABLE[0]`, `START[1]`, `ABORT[2]` |
-| `0x004` | `STATUS` | RO | `BUSY[0]`, `DONE[1]`, `ABORTED[2]`, `FAILED[3]`, `ENABLE_STATUS[4]` |
-| `0x008` | `PHASE_COUNT` | RW | Valid range 1..8 |
-| `0x00C` | `SENSOR_READY_TIMEOUT` | RW | Sensor-ready timeout cycles |
-| `0x010` | `FRAME_TIMEOUT` | RW | Frame completion timeout cycles |
-| `0x014` | `EXC_READY_TIMEOUT` | RW | Excitation-ready timeout cycles |
-| `0x018` | `MEASUREMENT_ID` | RO | Increments on accepted START |
-| `0x01C` | `CURRENT_PHASE` | RO | Phase/frame observability |
-| `0x020` | `ERROR_STATUS` | W1C/RO | Sticky error bits |
-| `0x024` | `INT_STATUS` | W1C/RO | Sticky interrupt pending bits |
-| `0x028` | `INT_ENABLE` | RW | Interrupt enable bits |
-| `0x02C` | `VERSION` | RO | `0x0001_0000` |
-| `0x040..0x07C` | `PHASE0..7_CFG/SETTLE` | RW | Recipe programming bank |
+| 0x000 | CTRL | RW/W1P | ENABLE[0], START[1], ABORT[2] |
+| 0x004 | STATUS | RO | BUSY[0], DONE[1], ABORTED[2], FAILED[3] |
+| 0x008 | PHASE_COUNT | RW | valid 1..8 |
+| 0x00C | SENSOR_READY_TIMEOUT | RW | cycles |
+| 0x010 | FRAME_TIMEOUT | RW | cycles |
+| 0x014 | EXCITATION_READY_TIMEOUT | RW | cycles |
+| 0x018 | TRIGGER_WIDTH | RW | `[15:0]`, cycles, capture requires nonzero |
+| 0x01C | MEASUREMENT_ID | RO | increments on accepted START |
+| 0x020 | CURRENT_PHASE | RO | current active phase index |
+| 0x024 | CURRENT_FRAME | RO | current active frame index |
+| 0x028 | ERROR_STATUS | W1C/RO | sticky error bits |
+| 0x02C | INT_STATUS | W1C/RO | sticky interrupt pending bits |
+| 0x030 | INT_ENABLE | RW | interrupt enable mask |
+| 0x034 | VERSION | RO | `0x0002_0000` |
+| 0x038..0x03C | - | - | unmapped |
+| 0x040 | PHASE0_CFG | RW | TYPE + FRAME_COUNT |
+| 0x044 | PHASE0_TIME | RW | settle/wait cycles |
+| 0x048 | PHASE1_CFG | RW | TYPE + FRAME_COUNT |
+| 0x04C | PHASE1_TIME | RW | settle/wait cycles |
+| 0x050 | PHASE2_CFG | RW | TYPE + FRAME_COUNT |
+| 0x054 | PHASE2_TIME | RW | settle/wait cycles |
+| 0x058 | PHASE3_CFG | RW | TYPE + FRAME_COUNT |
+| 0x05C | PHASE3_TIME | RW | settle/wait cycles |
+| 0x060 | PHASE4_CFG | RW | TYPE + FRAME_COUNT |
+| 0x064 | PHASE4_TIME | RW | settle/wait cycles |
+| 0x068 | PHASE5_CFG | RW | TYPE + FRAME_COUNT |
+| 0x06C | PHASE5_TIME | RW | settle/wait cycles |
+| 0x070 | PHASE6_CFG | RW | TYPE + FRAME_COUNT |
+| 0x074 | PHASE6_TIME | RW | settle/wait cycles |
+| 0x078 | PHASE7_CFG | RW | TYPE + FRAME_COUNT |
+| 0x07C | PHASE7_TIME | RW | settle/wait cycles |
 
-## Phase descriptor
+## PHASEn_CFG format
 
-`PHASEn_CFG`:
+```text
+31                       16 15        8 7        2 1      0
++--------------------------+-----------+----------+--------+
+|       reserved = 0       |FRAME_COUNT|reserved  | TYPE   |
++--------------------------+-----------+----------+--------+
+```
 
-- `[1:0] TYPE`: `00=DARK`, `01=SIGNAL`, `10=WAIT`, `11=RESERVED`
-- `[15:8] FRAME_NUM`: DARK/SIGNAL = 1..255, WAIT = 0
-- all remaining bits are reserved and read as zero
+TYPE:
 
-`PHASEn_SETTLE[31:0]` is an unsigned cycle count.
-
-## ERROR_STATUS
-
-| Bit | Meaning | Class |
-|---:|---|---|
-| 0 | CONFIG_ERROR | Non-fatal |
-| 1 | CMD_REJECT | Non-fatal |
-| 2 | SENSOR_READY_TIMEOUT | Fatal |
-| 3 | SENSOR_FRAME_TIMEOUT | Fatal |
-| 4 | SENSOR_ERROR | Fatal |
-| 5 | EXC_READY_TIMEOUT | Fatal |
-| 6 | EXCITATION_FAULT | Fatal |
-| 7 | ILLEGAL_STATE | Fatal |
-
-## INT_STATUS / INT_ENABLE
-
-| Bit | Source |
-|---:|---|
-| 0 | MEAS_DONE |
-| 1 | ABORT_DONE |
-| 2 | CONFIG_ERROR |
-| 3 | CMD_REJECT |
-| 4 | SENSOR_READY_TIMEOUT |
-| 5 | SENSOR_FRAME_TIMEOUT |
-| 6 | SENSOR_ERROR |
-| 7 | EXC_READY_TIMEOUT |
-| 8 | EXCITATION_FAULT |
-| 9 | ILLEGAL_STATE |
-
-`irq_o = |(INT_STATUS & INT_ENABLE)`.
-
-For both `ERROR_STATUS` and `INT_STATUS`, a hardware set wins over a software W1C in the same cycle.
+- `00` DARK
+- `01` SIGNAL
+- `10` WAIT
+- `11` reserved/illegal
