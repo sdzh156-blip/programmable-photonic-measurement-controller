@@ -16,14 +16,13 @@ module photonic_ctrl_top #(
     output logic                       pslverr_o,
 
     input  logic                       sensor_ready_async_i,
-    input  logic                       sensor_frame_done_async_i,
+    input  logic                       sensor_frame_done_toggle_async_i,
     input  logic                       sensor_error_async_i,
     input  logic                       excitation_ready_async_i,
     input  logic                       excitation_fault_async_i,
 
     output logic                       excitation_enable_o,
     output logic                       sensor_trigger_o,
-    output logic                       sensor_frame_ack_o,
     output logic                       frame_tag_valid_o,
     output logic [1:0]                 frame_type_o,
     output logic [31:0]                measurement_id_o,
@@ -41,7 +40,6 @@ module photonic_ctrl_top #(
     logic                      enable;
     logic                      start_req;
     logic                      abort_req;
-    logic                      start_enable_value;
     logic [3:0]                phase_count;
     logic [31:0]               sensor_ready_timeout;
     logic [31:0]               frame_timeout;
@@ -64,7 +62,8 @@ module photonic_ctrl_top #(
     logic [9:0]                int_enable_wdata;
 
     logic                      sensor_ready_sync;
-    logic                      sensor_frame_done_sync;
+    logic                      sensor_frame_done_toggle_sync;
+    logic                      sensor_frame_done_event;
     logic                      sensor_error_sync;
     logic                      excitation_ready_sync;
     logic                      excitation_fault_sync;
@@ -108,8 +107,12 @@ module photonic_ctrl_top #(
     sync2_level #(.WIDTH(1)) u_sync_sensor_ready (
         .clk_i(pclk_i), .rst_ni(preset_ni), .async_i(sensor_ready_async_i), .sync_o(sensor_ready_sync)
     );
-    sync2_level #(.WIDTH(1)) u_sync_sensor_frame_done (
-        .clk_i(pclk_i), .rst_ni(preset_ni), .async_i(sensor_frame_done_async_i), .sync_o(sensor_frame_done_sync)
+    sync2_toggle_event u_sync_sensor_frame_done_toggle (
+        .clk_i(pclk_i),
+        .rst_ni(preset_ni),
+        .async_toggle_i(sensor_frame_done_toggle_async_i),
+        .sync_toggle_o(sensor_frame_done_toggle_sync),
+        .event_o(sensor_frame_done_event)
     );
     sync2_level #(.WIDTH(1)) u_sync_sensor_error (
         .clk_i(pclk_i), .rst_ni(preset_ni), .async_i(sensor_error_async_i), .sync_o(sensor_error_sync)
@@ -136,7 +139,6 @@ module photonic_ctrl_top #(
         .enable_o(enable),
         .start_req_o(start_req),
         .abort_req_o(abort_req),
-        .start_enable_value_o(start_enable_value),
         .phase_count_o(phase_count),
         .sensor_ready_timeout_o(sensor_ready_timeout),
         .frame_timeout_o(frame_timeout),
@@ -151,6 +153,10 @@ module photonic_ctrl_top #(
         .measurement_id_i(measurement_id_o),
         .current_phase_i(phase_index_o),
         .current_frame_i(frame_index_o),
+        .sensor_ready_i(sensor_ready_sync),
+        .sensor_error_i(sensor_error_sync),
+        .excitation_ready_i(excitation_ready_sync),
+        .excitation_fault_i(excitation_fault_sync),
         .error_hw_set_i(error_set),
         .error_status_o(error_status),
         .int_status_i(int_status),
@@ -190,7 +196,6 @@ module photonic_ctrl_top #(
         .enable_i(enable),
         .start_req_i(start_req),
         .abort_req_i(abort_req),
-        .start_enable_value_i(start_enable_value),
         .prog_phase_count_i(phase_count),
         .prog_sensor_ready_timeout_i(sensor_ready_timeout),
         .prog_frame_timeout_i(frame_timeout),
@@ -199,7 +204,7 @@ module photonic_ctrl_top #(
         .prog_phase_cfg_flat_i(phase_cfg_flat),
         .prog_phase_time_flat_i(phase_time_flat),
         .sensor_ready_i(sensor_ready_sync),
-        .sensor_frame_done_i(sensor_frame_done_sync),
+        .sensor_frame_done_event_i(sensor_frame_done_event),
         .sensor_error_i(sensor_error_sync),
         .excitation_ready_i(excitation_ready_sync),
         .excitation_fault_i(excitation_fault_sync),
@@ -214,7 +219,6 @@ module photonic_ctrl_top #(
         .trigger_pulse_i(trigger_pulse),
         .excitation_enable_o(excitation_enable_o),
         .sensor_trigger_o(sensor_trigger_o),
-        .sensor_frame_ack_o(sensor_frame_ack_o),
         .frame_tag_valid_o(frame_tag_valid_o),
         .frame_type_o(frame_type_o),
         .measurement_id_o(measurement_id_o),
@@ -240,7 +244,8 @@ module photonic_ctrl_top #(
         .irq_o(irq_o)
     );
 
-    assign unused_internal = timer_active ^ timer_count[0] ^ trigger_busy ^ error_status[0];
+    assign unused_internal = timer_active ^ timer_count[0] ^ trigger_busy ^
+                             error_status[0] ^ sensor_frame_done_toggle_sync;
 endmodule
 
 `default_nettype wire
