@@ -1,2 +1,9 @@
--f filelist.f
+rtl/sync2_level.sv
+rtl/timing_engine.sv
+rtl/pulse_engine.sv
+rtl/apb_slave.sv
+rtl/irq_ctrl.sv
+rtl/photonic_csr.sv
+rtl/phase_sequencer.sv
+rtl/photonic_ctrl_top.sv
 tb/pmc_smoke_tb.sv
