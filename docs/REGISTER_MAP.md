@@ -1,24 +1,25 @@
-# PMC V2 Register Map
+# PMC V2.1 Register Map
 
 All addresses are offsets inside the PMC APB window.
 
 | Offset | Name | Access | Description |
 |---:|---|---|---|
-| 0x000 | CTRL | RW/W1P | ENABLE[0], START[1], ABORT[2] |
+| 0x000 | CTRL | RW | ENABLE[0] |
 | 0x004 | STATUS | RO | BUSY[0], DONE[1], ABORTED[2], FAILED[3] |
 | 0x008 | PHASE_COUNT | RW | valid 1..8 |
 | 0x00C | SENSOR_READY_TIMEOUT | RW | cycles |
 | 0x010 | FRAME_TIMEOUT | RW | cycles |
-| 0x014 | EXCITATION_READY_TIMEOUT | RW | cycles |
+| 0x014 | EXCITATION_READY_TIMEOUT | RW | cycles; used for READY-low re-arm and READY-high qualification |
 | 0x018 | TRIGGER_WIDTH | RW | `[15:0]`, cycles, capture requires nonzero |
 | 0x01C | MEASUREMENT_ID | RO | increments on accepted START |
-| 0x020 | CURRENT_PHASE | RO | current active phase index |
-| 0x024 | CURRENT_FRAME | RO | current active frame index |
+| 0x020 | CURRENT_PHASE | RO | active phase index |
+| 0x024 | CURRENT_FRAME | RO | active frame index |
 | 0x028 | ERROR_STATUS | W1C/RO | sticky error bits |
 | 0x02C | INT_STATUS | W1C/RO | sticky interrupt pending bits |
 | 0x030 | INT_ENABLE | RW | interrupt enable mask |
-| 0x034 | VERSION | RO | `0x0002_0000` |
-| 0x038..0x03C | - | - | unmapped |
+| 0x034 | VERSION | RO | `0x0002_0100` |
+| 0x038 | COMMAND | W1P / RAZ | START[0], ABORT[1] |
+| 0x03C | DEVICE_STATUS | RO | synchronized external device levels |
 | 0x040 | PHASE0_CFG | RW | TYPE + FRAME_COUNT |
 | 0x044 | PHASE0_TIME | RW | settle/wait cycles |
 | 0x048 | PHASE1_CFG | RW | TYPE + FRAME_COUNT |
@@ -36,6 +37,34 @@ All addresses are offsets inside the PMC APB window.
 | 0x078 | PHASE7_CFG | RW | TYPE + FRAME_COUNT |
 | 0x07C | PHASE7_TIME | RW | settle/wait cycles |
 
+## CTRL
+
+```text
+bit 0  ENABLE  RW
+```
+
+ENABLE is persistent state. Clearing it while BUSY aborts the active measurement.
+
+## COMMAND
+
+```text
+bit 0  START  W1P
+bit 1  ABORT  W1P
+```
+
+COMMAND reads as zero. ENABLE must already be 1 before issuing START. START and ABORT written together do not start a measurement; while BUSY, ABORT dominates.
+
+## DEVICE_STATUS
+
+```text
+bit 0  SENSOR_READY
+bit 1  SENSOR_ERROR
+bit 2  EXCITATION_READY
+bit 3  EXCITATION_FAULT
+```
+
+These are synchronized level observations intended for software diagnosis. Frame completion is a toggle event and is therefore not represented as persistent DEVICE_STATUS.
+
 ## PHASEn_CFG format
 
 ```text
@@ -46,7 +75,6 @@ All addresses are offsets inside the PMC APB window.
 ```
 
 TYPE:
-
 - `00` DARK
 - `01` SIGNAL
 - `10` WAIT
