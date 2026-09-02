@@ -17,7 +17,6 @@ module photonic_csr #(
     output logic                     enable_o,
     output logic                     start_req_o,
     output logic                     abort_req_o,
-    output logic                     start_enable_value_o,
     output logic [3:0]               phase_count_o,
     output logic [31:0]              sensor_ready_timeout_o,
     output logic [31:0]              frame_timeout_o,
@@ -33,6 +32,11 @@ module photonic_csr #(
     input  logic [31:0]              measurement_id_i,
     input  logic [2:0]               current_phase_i,
     input  logic [7:0]               current_frame_i,
+
+    input  logic                     sensor_ready_i,
+    input  logic                     sensor_error_i,
+    input  logic                     excitation_ready_i,
+    input  logic                     excitation_fault_i,
 
     input  logic [7:0]               error_hw_set_i,
     output logic [7:0]               error_status_o,
@@ -57,6 +61,8 @@ module photonic_csr #(
     localparam logic [ADDR_WIDTH-1:0] A_INT_STATUS      = 12'h02C;
     localparam logic [ADDR_WIDTH-1:0] A_INT_ENABLE      = 12'h030;
     localparam logic [ADDR_WIDTH-1:0] A_VERSION         = 12'h034;
+    localparam logic [ADDR_WIDTH-1:0] A_COMMAND         = 12'h038;
+    localparam logic [ADDR_WIDTH-1:0] A_DEVICE_STATUS   = 12'h03C;
     localparam logic [ADDR_WIDTH-1:0] A_PHASE_BASE      = 12'h040;
 
     logic                         enable_q;
@@ -76,8 +82,8 @@ module photonic_csr #(
     logic                         phase_window;
     logic                         phase_cfg_sel;
 
-    assign phase_window = (csr_addr_i >= A_PHASE_BASE) && (csr_addr_i <= 12'h07C);
-    assign phase_index  = (csr_addr_i - A_PHASE_BASE) >> 3;
+    assign phase_window  = (csr_addr_i >= A_PHASE_BASE) && (csr_addr_i <= 12'h07C);
+    assign phase_index   = (csr_addr_i - A_PHASE_BASE) >> 3;
     assign phase_cfg_sel = (csr_addr_i[2] == 1'b0);
 
     always_comb begin
@@ -96,7 +102,9 @@ module photonic_csr #(
             A_ERROR_STATUS,
             A_INT_STATUS,
             A_INT_ENABLE,
-            A_VERSION: addr_mapped = 1'b1;
+            A_VERSION,
+            A_COMMAND,
+            A_DEVICE_STATUS: addr_mapped = 1'b1;
             default: addr_mapped = phase_window;
         endcase
     end
@@ -112,7 +120,8 @@ module photonic_csr #(
             A_TRIGGER_WIDTH,
             A_ERROR_STATUS,
             A_INT_STATUS,
-            A_INT_ENABLE: write_legal = 1'b1;
+            A_INT_ENABLE,
+            A_COMMAND: write_legal = 1'b1;
             default: write_legal = phase_window;
         endcase
     end
@@ -120,9 +129,8 @@ module photonic_csr #(
     assign csr_error_o = (csr_wr_en_i || csr_rd_en_i) &&
                          (!addr_mapped || (csr_wr_en_i && !write_legal));
 
-    assign start_req_o          = csr_wr_en_i && (csr_addr_i == A_CTRL) && csr_wdata_i[1];
-    assign abort_req_o          = csr_wr_en_i && (csr_addr_i == A_CTRL) && csr_wdata_i[2];
-    assign start_enable_value_o = csr_wdata_i[0];
+    assign start_req_o = csr_wr_en_i && (csr_addr_i == A_COMMAND) && csr_wdata_i[0];
+    assign abort_req_o = csr_wr_en_i && (csr_addr_i == A_COMMAND) && csr_wdata_i[1];
 
     assign error_sw_clear       = (csr_wr_en_i && (csr_addr_i == A_ERROR_STATUS)) ? csr_wdata_i[7:0] : 8'd0;
     assign int_sw_clear_o       = (csr_wr_en_i && (csr_addr_i == A_INT_STATUS)) ? csr_wdata_i[9:0] : 10'd0;
@@ -136,10 +144,10 @@ module photonic_csr #(
             sensor_ready_timeout_q      <= 32'd0;
             frame_timeout_q             <= 32'd0;
             excitation_ready_timeout_q  <= 32'd0;
-            trigger_width_q              <= 16'd1;
-            phase_cfg_flat_q             <= '0;
-            phase_time_flat_q            <= '0;
-            error_status_q               <= 8'd0;
+            trigger_width_q             <= 16'd1;
+            phase_cfg_flat_q            <= '0;
+            phase_time_flat_q           <= '0;
+            error_status_q              <= 8'd0;
         end else begin
             error_status_q <= (error_status_q & ~error_sw_clear) | error_hw_set_i;
 
@@ -193,7 +201,9 @@ module photonic_csr #(
             A_ERROR_STATUS:   csr_rdata_o = {24'd0, error_status_q};
             A_INT_STATUS:     csr_rdata_o = {22'd0, int_status_i};
             A_INT_ENABLE:     csr_rdata_o = {22'd0, int_enable_i};
-            A_VERSION:        csr_rdata_o = 32'h0002_0000;
+            A_VERSION:        csr_rdata_o = 32'h0002_0100;
+            A_COMMAND:        csr_rdata_o = 32'd0;
+            A_DEVICE_STATUS:  csr_rdata_o = {28'd0, excitation_fault_i, excitation_ready_i, sensor_error_i, sensor_ready_i};
             default: begin
                 if (phase_window && (phase_index < PHASES)) begin
                     if (phase_cfg_sel) begin
@@ -215,7 +225,6 @@ module photonic_csr #(
     assign phase_cfg_flat_o           = phase_cfg_flat_q;
     assign phase_time_flat_o          = phase_time_flat_q;
     assign error_status_o             = error_status_q;
-
 endmodule
 
 `default_nettype wire

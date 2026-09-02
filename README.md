@@ -10,14 +10,15 @@ The application background is chip-scale Raman / photonic sensing. The design is
 
 ```text
 SoC/MCU --APB--> PMC --timing/control--> Excitation
-                    \--trigger/ack----> Sensor
+                    \--trigger-------> Sensor
+                    <--DONE toggle----/
 
 Sensor payload data --------------------> separate acquisition / algorithm path
 ```
 
 PMC answers **when and in what order to measure**. It does not process the Raman payload itself.
 
-## V2 architecture
+## V2.1 architecture
 
 - 32-bit APB control/status interface
 - 1..8 programmable measurement phases
@@ -26,28 +27,31 @@ PMC answers **when and in what order to measure**. It does not process the Raman
 - deterministic measurement sequencer
 - shared 32-bit timing engine
 - programmable-width sensor trigger engine
-- asynchronous level synchronizers for external ready/done/fault inputs
-- DONE/ACK level handshake to prevent missed narrow pulses and stale completion reuse
-- excitation and sensor timeout handling
-- software abort and ENABLE-clear termination
-- hard-fault safety interlock
+- 2-FF synchronization for asynchronous READY/FAULT levels
+- toggle + 2-FF + destination pulse regeneration for asynchronous frame-completion events
+- fresh READY-low -> enable -> READY-high qualification for every SIGNAL phase
+- separate persistent `CTRL.ENABLE` and one-shot `COMMAND.START/ABORT` CSRs
+- readable synchronized device status
+- digital fault-safe shutdown / safe-state control
 - sticky W1C error and interrupt event state
 - GIC-facing IRQ output, without implementing a GIC
 
-## Why the architecture changed from V1
+## Design rationale
 
-V1 used AHB-Lite mainly to access control registers. V2 changes the software port to APB because PMC is fundamentally a low-bandwidth peripheral-control IP. The project complexity is now concentrated where it belongs: measurement timing, phase sequencing, device handshakes, safety, and verification.
+V1 used AHB-Lite mainly to access control registers. V2 moved the software port to APB because PMC is fundamentally a low-bandwidth peripheral-control IP. The project complexity is concentrated in measurement timing, phase sequencing, CDC/event handling, fault response and verification.
 
-V2 also intentionally avoids turning the recipe into a CPU-style instruction set. There is no instruction fetch, branch, general-purpose register file, or instruction prefetch.
+V2.1 removes the earlier DONE/ACK level protocol. Frame completion now follows the event-CDC method used elsewhere in the portfolio: the source toggles one bit per completion, PMC synchronizes the toggle and regenerates exactly one local event pulse. READY and FAULT remain level signals synchronized with 2-FF structures.
 
-## Mature open-source references
+The recipe is intentionally not a CPU-style instruction set. There is no instruction fetch, branch, general-purpose register file, ALU or instruction prefetch.
 
-Generic blocks were designed after reviewing mature implementations rather than inventing new protocol behavior from scratch:
+## Open-source reference policy
 
-- PULP Platform `apb_timer`: APB peripheral + cycle timer architecture
-- `Kleven2k/ramsey`: FPGA optical/ODMR pulse sequencer architecture
-- lowRISC OpenTitan `prim_flop_2sync`: two-flop level synchronizer pattern
-- lowRISC OpenTitan `prim_intr_hw`: event interrupt state/enable architecture
+Generic digital structures are informed by established open-source implementations rather than invented from scratch:
+
+- PULP Platform `apb_timer`: mature APB peripheral / timer organization reference
+- lowRISC OpenTitan `prim_flop_2sync`: mature two-flop level synchronizer reference
+- lowRISC OpenTitan `prim_intr_hw`: mature event-interrupt state / enable reference
+- `Kleven2k/ramsey`: optical/ODMR application-level pulse-sequencer reference; useful for domain behavior, not treated as an industrial-maturity baseline
 
 See [`docs/REFERENCE_ARCHITECTURE_SURVEY.md`](docs/REFERENCE_ARCHITECTURE_SURVEY.md).
 
@@ -63,6 +67,7 @@ rtl/
 ├── timing_engine.sv
 ├── pulse_engine.sv
 ├── sync2_level.sv
+├── sync2_toggle_event.sv
 ├── irq_ctrl.sv
 └── photonic_ctrl_top.sv
 ```
@@ -76,25 +81,18 @@ rtl/
 - [`docs/REFERENCE_ARCHITECTURE_SURVEY.md`](docs/REFERENCE_ARCHITECTURE_SURVEY.md)
 - [`docs/VERIFICATION_HANDOFF.md`](docs/VERIFICATION_HANDOFF.md)
 
-## Local checks
+## Checks
 
 ```bash
 make static
-make smoke        # Synopsys VCS
-```
-
-For Icarus Verilog:
-
-```bash
+make smoke        # Synopsys VCS when available
 make smoke_iverilog
 ```
 
-The repository GitHub Actions workflow installs Icarus Verilog and runs static + smoke checks.
+GitHub Actions installs Icarus Verilog and runs static + smoke checks. V2.0 previously passed Icarus compile/smoke; V2.1 must pass its own CI before being treated as the new frozen RTL baseline.
 
 ## Current milestone
 
-**V2 RTL baseline complete.**
+**V2.1 pre-DV architecture cleanup.**
 
-Local lightweight structural checks pass in the current development environment. A Verilog compiler is not available in that environment, so compile/elaboration/simulation must be confirmed by VCS or GitHub CI before declaring RTL verification PASS.
-
-Next milestone: SystemVerilog/UVM environment, SVA, functional coverage, regression, bug closure, then synthesis/timing/area reporting.
+The cleanup addresses event CDC, consecutive-SIGNAL readiness requalification, command-register semantics, device-status visibility, and fault-safe terminology. After V2.1 CI passes and the change is merged, the next milestone is SystemVerilog/UVM, SVA, functional coverage, regression, bug closure, then synthesis/timing/area reporting.

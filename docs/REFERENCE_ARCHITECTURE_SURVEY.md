@@ -1,112 +1,130 @@
-# PMC V2 Reference Architecture Survey
+# PMC V2.1 Reference Architecture Survey
 
 ## 1. Goal
 
-PMC V2 is intentionally not designed from a blank sheet. The project uses mature open-source RTL as **architecture references** for generic digital building blocks, while keeping the Raman/photonic measurement behavior, phase semantics, safety policy, and system integration original to this project.
+PMC is intentionally not designed from a blank sheet. Generic digital structures are informed by established open-source RTL, while Raman/photonic measurement behavior, phase semantics, sequencing policy and system integration remain project-specific.
 
-No third-party RTL file is copied verbatim into this repository. The implementation is an independent re-implementation informed by the patterns below.
+No third-party RTL file is copied verbatim into this repository. The local RTL is an independent implementation informed by the reviewed patterns.
 
-## 2. Reference projects
+## 2. Reference confidence levels
 
-### 2.1 PULP Platform `apb_timer`
+References are not treated as equally mature.
+
+- **Mature generic RTL references:** PULP Platform and lowRISC/OpenTitan. These are used to cross-check common peripheral, timer, synchronizer and interrupt structures.
+- **Application-domain reference:** `Kleven2k/ramsey`. It is relevant because it implements an FPGA optical/ODMR pulse sequencer, but it is a recent/small repository and is not treated as an industrial-maturity baseline.
+- **Portfolio-proven CDC pattern:** event toggle + 2FF + destination pulse regeneration, reused from the 2D-DMA project methodology for one-shot cross-domain events.
+
+## 3. PULP Platform `apb_timer`
 
 Repository: `pulp-platform/apb_timer`
 
-Relevant source files:
-
+Relevant source:
 - `src/apb_timer.sv`
-- `src/timer.sv`
+- timer implementation under the repository source tree
 
 Useful patterns:
-
-- APB peripheral with `PSEL/PENABLE/PWRITE/PADDR/PWDATA/PRDATA/PREADY/PSLVERR`.
-- Zero-wait-state register access when no peripheral stall is required.
-- Counter + compare style timing block.
-- APB register decode separated from the timing behavior.
-
-PMC adoption:
-
-- APB is used only as the software control/status plane.
-- PMC uses a zero-wait APB access model.
-- Timing is kept in a dedicated reusable timing engine.
-
-Not adopted:
-
-- PULP timer register map.
-- PULP timer prescaler behavior.
-- PULP timer interrupt encoding.
-
-### 2.2 `Kleven2k/ramsey`
-
-Repository: `Kleven2k/ramsey`
-
-Relevant source file:
-
-- `rtl/sequencer/pulse_sequencer.sv`
-
-This project is an FPGA timing sequencer for optical/ODMR experiments. Its sequencer drives configurable laser, microwave and readout windows using a state machine and cycle-based durations.
-
-Useful patterns:
-
-- Experiment timing represented as deterministic hardware states rather than a software delay loop.
-- Duration parameters expressed directly in clock cycles.
-- Dedicated gate outputs for physical experiment windows.
-- Repetition counter for multiple shots.
-- Single-cycle event pulses are explicitly cleared every cycle.
+- APB peripheral organization;
+- register decode separated from timing behavior;
+- counter/compare timing resources;
+- low-bandwidth control/status plane.
 
 PMC adoption:
-
-- Measurement phases are executed by a deterministic hardware sequencer.
-- Optical-control outputs are treated as timing-critical hardware signals.
-- Sensor trigger width is programmable in clock cycles.
-- Multi-frame capture uses a hardware frame counter.
+- APB for software control/status only;
+- dedicated timing engine rather than embedding counters throughout the FSM;
+- register semantics isolated from the APB shell.
 
 Not adopted:
+- PULP register map;
+- prescaler semantics;
+- timer interrupt encoding.
 
-- ODMR-specific microwave states.
-- Frequency sweep logic.
-- Photon counting and shot accumulation datapath.
-
-### 2.3 lowRISC OpenTitan primitives
+## 4. lowRISC OpenTitan primitives
 
 Repository: `lowRISC/opentitan`
 
-Relevant source files:
-
+Relevant source:
 - `hw/ip/prim_generic/rtl/prim_flop_2sync.sv`
 - `hw/ip/prim/rtl/prim_intr_hw.sv`
 
 Useful patterns:
-
-- A two-flop synchronizer is a standard primitive for asynchronous **level** inputs.
-- Event interrupts are sticky: a momentary hardware event sets interrupt state until software clears it.
-- Interrupt enable/mask is separate from interrupt pending state.
+- 2-FF synchronizer as a standard primitive for asynchronous **persistent levels**;
+- sticky hardware-event interrupt state;
+- separate interrupt pending and enable/mask state;
+- explicit RTL primitives with independently verifiable responsibilities.
 
 PMC adoption:
+- `sensor_ready`, `sensor_error`, `excitation_ready` and `excitation_fault` use 2-FF level synchronization;
+- event interrupt status is sticky;
+- software W1C and hardware set resolve with hardware-set priority;
+- IRQ is generated from pending AND enable.
 
-- External asynchronous ready/done/fault signals are first synchronized into the PMC clock domain.
-- Event interrupt status is sticky.
-- Software W1C clear and hardware set are resolved with hardware-set priority.
-- `irq_o` is generated from pending state AND interrupt enable.
+Important restriction:
+- a plain 2-FF synchronizer does not guarantee capture of an arbitrarily narrow asynchronous pulse. Therefore frame completion is **not** modeled as a one-cycle async pulse and is not modeled as a DONE/ACK level handshake in V2.1.
 
-Important interface restriction:
+## 5. Toggle-event CDC pattern
 
-- A plain 2-FF synchronizer does not guarantee capture of an arbitrarily narrow asynchronous pulse.
-- Therefore `sensor_frame_done_async_i` is defined as a **level handshake**: the sensor must hold DONE high until `sensor_frame_ack_o` is observed.
+Frame completion is a one-shot event. V2.1 uses the same classification and solution already used in the 2D-DMA project:
 
-## 3. Reuse policy
+```text
+source event
+   -> toggle source bit
+   -> 2FF into destination
+   -> compare synchronized current/previous toggle
+   -> one-cycle destination event
+```
 
-| Block | Policy | Reason |
+Why this was chosen:
+- preserves a one-shot event across unrelated clocks without requiring the destination to sample a narrow pulse;
+- avoids a one-cycle ACK returning to an asynchronous source;
+- matches the portfolio's established distinction between level CDC and event CDC.
+
+Required assumptions:
+- source toggle has a defined reset/baseline value;
+- source does not toggle twice before the destination can observe distinct changes;
+- one frame transaction produces exactly one completion toggle.
+
+This is an architectural pattern reused from the existing 2D-DMA work, not a claim that OpenTitan's `prim_flop_2sync` alone implements event CDC.
+
+## 6. `Kleven2k/ramsey`
+
+Repository: `Kleven2k/ramsey`
+
+This project is an FPGA pulse sequencer / photon-counter application for optical/ODMR experiments. It is useful as evidence that deterministic hardware pulse/state sequencing is a realistic experiment-control architecture.
+
+Useful concepts:
+- optical experiment timing represented as deterministic hardware states rather than software delay loops;
+- cycle-based configurable durations;
+- dedicated experiment gate outputs;
+- repetition/shot counting.
+
+PMC adoption:
+- deterministic phase sequencer;
+- timing-critical physical-control outputs;
+- programmable trigger width;
+- hardware frame repetition counter.
+
+Not adopted:
+- ODMR-specific microwave states;
+- frequency-sweep logic;
+- photon-counting/accumulation datapath;
+- source RTL itself.
+
+Maturity note: at the V2.1 review this repository is treated only as an application-domain reference. Its limited project history/adoption means it is not used to justify generic RTL correctness by itself.
+
+## 7. Reuse policy
+
+| Block | Policy | Primary basis |
 |---|---|---|
-| APB slave shell | Re-implement from mature APB peripheral pattern | Keep project self-contained and simple |
-| Cycle timer | Re-implement from mature counter/compare pattern | PMC timing semantics are project-specific |
-| 2-FF synchronizer | Re-implement standard primitive | No OpenTitan dependency required |
-| Sticky interrupt | Re-implement event-interrupt pattern | PMC register map is custom |
-| Pulse generator | Re-implement from experiment-sequencer concept | Width and stop semantics are PMC-specific |
-| Phase table | Original | Application-specific |
-| Measurement sequencer | Original | Application-specific |
-| Safety interlock | Original | Application-specific |
+| APB shell | independent implementation | mature APB peripheral patterns |
+| Cycle timer | independent implementation | PULP timer organization / counter semantics |
+| 2-FF level synchronizer | standard primitive reimplementation | OpenTitan-style level synchronization |
+| Toggle-event synchronizer | independent implementation | 2D-DMA event-CDC methodology |
+| Sticky interrupt | independent implementation | OpenTitan event-interrupt pattern |
+| Pulse generator | independent implementation | experiment-sequencer concept |
+| Phase table | original | photonic measurement requirements |
+| Measurement sequencer | original | photonic measurement requirements |
+| Digital fault-safe shutdown | original | project-specific fault policy |
 
-## 4. Design consequence
+## 8. Design consequence
 
-PMC V2 is not a small CPU and does not implement instruction fetch, branch, general-purpose registers, or instruction prefetch. It is a **programmable measurement sequencer**: software configures a bounded table of measurement phases, and dedicated hardware executes them deterministically.
+PMC is not a small CPU and does not implement instruction fetch, branch, general-purpose registers or instruction prefetch. It is a **programmable measurement sequencer**: software configures a bounded table of measurement phases and dedicated hardware executes them deterministically.

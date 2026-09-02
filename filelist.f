@@ -1,4 +1,5 @@
 rtl/sync2_level.sv
+rtl/sync2_toggle_event.sv
 rtl/timing_engine.sv
 rtl/pulse_engine.sv
 rtl/apb_slave.sv

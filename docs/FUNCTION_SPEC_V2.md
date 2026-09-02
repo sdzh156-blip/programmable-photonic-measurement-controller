@@ -1,104 +1,75 @@
-# PMC Function Specification V2.0
+# PMC Function Specification V2.1
 
 **Project:** Programmable Photonic Timing & Measurement Controller  
 **定位:** 面向硅光/拉曼测量系统的可编程光子测量时序控制 IP  
 **Project type:** RTL Design + UVM Verification  
-**Status:** RTL baseline implemented; verification handoff ready
+**Status:** Pre-DV architecture cleanup; RTL must pass V2.1 CI before freeze
 
 ## 1. System positioning
 
-PMC is a control-plane IP located between an SoC/MCU and the physical optical measurement hardware.
+PMC is a control-plane IP located between an SoC/MCU and physical optical measurement hardware. Software configures **how a measurement should run**; PMC executes the timing-sensitive sequence in hardware.
 
-Software configures **how a measurement should run**. PMC then executes the timing-sensitive sequence in hardware.
+PMC controls excitation enable, sensor trigger timing, settle/wait intervals, READY qualification, frame-completion timeout, repeated captures, abort/fault response and event/interrupt reporting. PMC does **not** process Raman payload data and does not implement ADC, image/pixel transport, spectrum reconstruction, FFT, DMA, MIPI or machine-learning algorithms.
 
-PMC controls:
+This is an engineering abstraction for chip-Raman / optical-sensing workflows. It must not be presented as an unpublished internal architecture of any company.
 
-- excitation source enable;
-- detector/sensor trigger timing;
-- phase settle delay;
-- sensor-ready qualification;
-- frame completion timeout;
-- repeated frame capture;
-- abort and fault-safe shutdown;
-- event/interrupt reporting.
+## 2. Measurement model
 
-PMC does **not** process Raman payload data and does not implement ADC, image/pixel transport, spectrum reconstruction, FFT, DMA, MIPI, or machine-learning algorithms.
+A measurement consists of 1 to 8 sequential phases:
 
-## 2. Application abstraction
-
-PMC models a Raman/photonic measurement as 1 to 8 sequential phases.
-
-Supported phase types:
-
-| Type | Encoding | Excitation | Sensor capture | Phase time meaning |
+| Type | Encoding | Excitation | Sensor capture | PHASE_TIME meaning |
 |---|---:|---|---|---|
-| DARK | `00` | OFF | Yes | settle delay before first frame |
-| SIGNAL | `01` | ON | Yes | settle delay after excitation-ready |
-| WAIT | `10` | OFF | No | total wait duration |
-| Reserved | `11` | - | - | illegal configuration |
+| DARK | `00` | OFF | Yes | settle before first frame |
+| SIGNAL | `01` | ON after fresh READY qualification | Yes | settle after READY-high |
+| WAIT | `10` | OFF | No | wait duration |
+| Reserved | `11` | - | - | illegal |
 
-A typical measurement can therefore be expressed as:
+Example: `DARK -> SIGNAL -> WAIT -> SIGNAL`.
 
-`DARK -> SIGNAL -> WAIT -> SIGNAL`
+## 3. Clock, reset and CDC classification
 
-This is an engineering abstraction for chip-Raman / optical sensing workflows. It must not be presented as an unpublished internal architecture of any company.
-
-## 3. Clock and reset
-
-- Single local control clock: `pclk_i`.
+- APB and all PMC internal logic use `pclk_i`.
 - Active-low reset: `preset_ni`.
-- APB and all internal logic use the same clock.
-- External device status inputs may be asynchronous and are synchronized by local 2-FF synchronizers.
+- External persistent status levels (`sensor_ready`, `sensor_error`, `excitation_ready`, `excitation_fault`) use 2-FF synchronization into `pclk_i`.
+- Frame completion is an event, not a persistent level. The sensor exposes a **toggle bit** that flips exactly once for each completed frame. PMC synchronizes that toggle through 2 FFs and regenerates one local one-cycle `frame_done_event` from the synchronized-toggle change.
+- The source-side frame-completion toggle shall be initialized to 0 before normal PMC operation / reset release and shall not toggle more than once per completed frame.
+- Events must not be produced faster than the destination synchronizer can observe distinct toggle changes. The normal PMC protocol naturally spaces completion events by a trigger/capture transaction; violating this source contract is outside V2.1 guarantees.
+
+This CDC scheme intentionally mirrors the event-toggle method already used elsewhere in the project portfolio rather than relying on a one-cycle asynchronous pulse or DONE/ACK level handshake.
 
 ## 4. APB software interface
 
 - 32-bit APB peripheral interface.
-- Address width: 12 bits, 4 KiB window.
+- 12-bit address, 4 KiB window.
 - Word-aligned 32-bit accesses only.
 - Zero wait state: `PREADY=1`.
-- Misaligned or unmapped access raises `PSLVERR` during ACCESS phase.
+- Misaligned or unmapped access raises `PSLVERR` during ACCESS.
 - Write to read-only CSR raises `PSLVERR` and has no side effect.
 
 ## 5. Programming bank and active snapshot
 
-Software writes a programming bank while the controller is idle or busy.
-
-On an accepted `START`, PMC atomically snapshots:
-
-- phase count;
-- all phase descriptors;
-- all phase times;
-- sensor-ready timeout;
-- frame timeout;
-- excitation-ready timeout;
-- trigger width.
-
-The active measurement uses only the snapshot. Writes performed while BUSY affect the **next** measurement.
+Software may update the programming bank while IDLE or BUSY. On an accepted START, PMC snapshots phase count, phase descriptors, phase times, READY/frame timeouts and trigger width. The active measurement uses only that snapshot; BUSY-time programming writes affect the next accepted measurement.
 
 ## 6. Command semantics
 
-`CTRL.ENABLE` is RW. `START` and `ABORT` are write-one pulse commands.
+Persistent state and one-shot commands are separated:
+
+- `CTRL.ENABLE[0]`: RW persistent enable.
+- `COMMAND.START[0]`: W1P command.
+- `COMMAND.ABORT[1]`: W1P command.
+- COMMAND reads as zero.
 
 START is accepted only when:
 
-- command is issued from IDLE;
-- effective ENABLE is 1;
-- no hard external fault is active;
-- phase table is valid;
-- controller is not BUSY;
-- ABORT is not written in the same transaction.
+- state is IDLE and controller is not BUSY;
+- `CTRL.ENABLE=1` before the COMMAND access;
+- no synchronized hard fault is active;
+- phase-table configuration is valid;
+- ABORT is not asserted in the same COMMAND write.
 
-`ENABLE=1` and `START=1` may be written in the same CTRL access.
+Because ENABLE and START are separate CSRs in V2.1, software shall enable PMC first and then issue START. START while BUSY is rejected without disturbing the current measurement. ABORT while BUSY terminates the active measurement. Clearing ENABLE while BUSY also aborts the active measurement.
 
-If START and ABORT are written together:
-
-- ABORT dominates for an active measurement;
-- START is rejected;
-- `CMD_REJECT` event is set.
-
-START while BUSY is rejected without disturbing the current measurement.
-
-Clearing ENABLE while BUSY aborts the active measurement.
+If START and ABORT are written together, START is rejected; if BUSY, ABORT dominates and terminates the active measurement. If IDLE, no measurement starts and CMD_REJECT is recorded.
 
 ## 7. Phase descriptor
 
@@ -108,138 +79,115 @@ Each phase has two 32-bit programming words.
 
 - `[1:0] TYPE`
 - `[15:8] FRAME_COUNT`
-- all other bits reserved/read-as-zero/write-ignored.
+- other bits reserved/read-as-zero/write-ignored.
 
 Rules:
-
-- DARK: `FRAME_COUNT = 1..255`
-- SIGNAL: `FRAME_COUNT = 1..255`
+- DARK/SIGNAL: `FRAME_COUNT = 1..255`
 - WAIT: `FRAME_COUNT = 0`
 
 ### PHASEn_TIME
 
-- DARK: settle delay before the first frame.
-- SIGNAL: settle delay after excitation-ready.
+- DARK: settle before first frame.
+- SIGNAL: settle after a **fresh** excitation READY-high qualification.
 - WAIT: phase duration.
-- Zero is legal and means no additional delay.
+- Zero is legal and means no additional programmable delay.
 
-## 8. Measurement validity rules
+## 8. Configuration validity
 
-A recipe is invalid when any of the following is true:
+A recipe is invalid when phase count is 0 or >8, an active phase uses reserved type, DARK/SIGNAL has zero frame count, WAIT has nonzero frame count, no capture phase exists, trigger width is zero for a capture recipe, required sensor/frame timeout is zero, or excitation-ready timeout is zero when any SIGNAL exists.
 
-- phase count is 0 or greater than 8;
-- an active phase uses reserved type `11`;
-- DARK/SIGNAL uses zero frame count;
-- WAIT uses nonzero frame count;
-- no capture phase exists;
-- trigger width is zero when capture exists;
-- sensor-ready timeout is zero when capture exists;
-- frame timeout is zero when capture exists;
-- excitation-ready timeout is zero when any SIGNAL phase exists.
-
-Invalid START sets CONFIG_ERROR and does not start BUSY.
+Invalid START sets CONFIG_ERROR and does not enter BUSY.
 
 ## 9. Sensor interface contract
 
 Inputs:
-
-- `sensor_ready_async_i`: level, sensor can accept a new trigger.
-- `sensor_frame_done_async_i`: level, current frame completed.
-- `sensor_error_async_i`: level, hard sensor fault.
+- `sensor_ready_async_i`: persistent level; high means sensor can accept a trigger.
+- `sensor_frame_done_toggle_async_i`: event toggle; flips once per completed frame.
+- `sensor_error_async_i`: persistent hard-fault level.
 
 Outputs:
-
 - `sensor_trigger_o`: programmable-width trigger pulse.
-- `sensor_frame_ack_o`: one-cycle acknowledgement of accepted frame completion.
 - `frame_tag_valid_o`: asserted while trigger is active.
 - `frame_type_o`, `measurement_id_o`, `phase_index_o`, `frame_index_o`: metadata tags.
 
-Important DONE handshake:
+Frame-completion behavior:
+- no `sensor_frame_ack_o` exists in V2.1;
+- PMC converts each observed toggle change into one local completion event;
+- an event is consumed only in `WAIT_FRAME`; an event in another state is ignored;
+- frame timeout starts after the trigger pulse completes;
+- an event observed on the timeout deadline wins over timeout.
 
-- `sensor_frame_done_async_i` must be held high until the sensor observes `sensor_frame_ack_o`.
-- After ACK, sensor must deassert DONE before the next frame completion can be accepted.
-- PMC includes an explicit `WAIT_FRAME_CLEAR` state so a synchronized stale DONE level cannot be consumed as the next frame completion.
+The external sensor/integration must be able to detect the configured trigger width. System integration shall choose a trigger width long enough for the receiving device/interface.
 
 ## 10. Excitation interface contract
 
 Inputs:
-
-- `excitation_ready_async_i`: level, source is stable/qualified.
-- `excitation_fault_async_i`: level, hard source fault.
+- `excitation_ready_async_i`: persistent level; high means enabled source is qualified/stable.
+- `excitation_fault_async_i`: persistent fault level.
 
 Output:
-
 - `excitation_enable_o`: excitation command gate.
 
-SIGNAL phase sequence:
+Every SIGNAL phase performs a fresh re-arm sequence:
+1. keep excitation disabled;
+2. wait for synchronized READY to be low, with excitation-ready timeout;
+3. assert excitation enable;
+4. wait for synchronized READY to become high, with excitation-ready timeout;
+5. execute configured settle interval;
+6. capture configured frames;
+7. deassert excitation at phase completion or abnormal exit.
 
-1. assert excitation enable;
-2. wait excitation-ready with timeout;
-3. execute settle delay;
-4. capture configured frames;
-5. deassert excitation at phase completion or any abnormal exit.
+This prevents a stale synchronized READY-high from a preceding SIGNAL phase from being accepted as qualification for the next phase.
 
-DARK and WAIT always keep excitation disabled.
+DARK and WAIT keep excitation disabled.
 
 ## 11. Timing semantics
 
 All programmable timing values are in `pclk_i` cycles.
 
-Shared timing engine behavior:
+- loading `N>0` waits exactly N full clock cycles according to the shared timing-engine contract;
+- `N=1` waits one full programmable cycle;
+- zero phase delay is skipped;
+- success observed on the deadline cycle wins over timeout;
+- trigger width is programmable 1..65535 cycles;
+- frame timeout starts after trigger completion.
 
-- loading `N>0` waits exactly N full clock cycles;
-- `N=1` waits one full cycle;
-- zero-duration phase delay is skipped by the sequencer;
-- success observed on the deadline cycle wins over timeout.
+Exact N=1/deadline behavior is a mandatory directed-verification item before sign-off.
 
-Trigger pulse behavior:
+## 12. Fault-safe shutdown and event priority
 
-- width is programmable from 1 to 65535 cycles;
-- frame timeout starts only after the trigger pulse completes;
-- frame completion before WAIT_FRAME is ignored.
-
-## 12. Safety and event priority
+The PMC implements **digital fault-safe shutdown / safe-state control**, not an independent physical laser-safety interlock. External fault levels cross a 2-FF synchronizer, so shutdown includes synchronization latency. Any real personnel/equipment safety interlock must be implemented independently at system level.
 
 Priority while BUSY:
-
 1. reset;
-2. hard external fault;
+2. synchronized hard external fault;
 3. software ABORT or ENABLE clear;
 4. normal success/completion;
 5. timeout;
 6. ordinary state transition.
 
-Hard external faults:
-
-- sensor error;
-- excitation fault.
-
-Any hard fault forces:
-
-- `BUSY=0`;
-- `FAILED=1`;
-- excitation disabled;
-- trigger stopped/masked;
-- sticky error and interrupt event set.
+Hard faults are sensor error and excitation fault. A hard fault terminates BUSY, sets FAILED, forces excitation off, suppresses/stops trigger activity and records sticky error/interrupt events.
 
 ## 13. Terminal status
 
-`STATUS` contains:
+STATUS contains BUSY, DONE, ABORTED and FAILED. DONE/ABORTED/FAILED describe the last accepted measurement and are mutually exclusive. They are cleared by the next accepted START. Rejected START does not overwrite prior terminal status.
 
-- BUSY;
-- DONE;
-- ABORTED;
-- FAILED.
+## 14. Device status
 
-DONE/ABORTED/FAILED describe the last accepted measurement and are mutually exclusive.
+`DEVICE_STATUS` exposes synchronized external levels for diagnosis even when a command is rejected:
 
-They are cleared only by the next accepted START.
+| Bit | Meaning |
+|---:|---|
+| 0 | SENSOR_READY |
+| 1 | SENSOR_ERROR |
+| 2 | EXCITATION_READY |
+| 3 | EXCITATION_FAULT |
 
-Rejected START does not overwrite prior terminal status.
+The frame-completion toggle/event is intentionally not exposed as a persistent status bit.
 
-## 14. Error status
+## 15. Error status
 
-ERROR_STATUS is sticky W1C.
+ERROR_STATUS is sticky W1C:
 
 | Bit | Meaning |
 |---:|---|
@@ -248,17 +196,13 @@ ERROR_STATUS is sticky W1C.
 | 2 | SENSOR_READY_TIMEOUT |
 | 3 | FRAME_TIMEOUT |
 | 4 | SENSOR_ERROR |
-| 5 | EXCITATION_READY_TIMEOUT |
+| 5 | EXCITATION_READY_TIMEOUT (includes failure to re-arm READY-low or qualify READY-high) |
 | 6 | EXCITATION_FAULT |
 | 7 | ILLEGAL_STATE |
 
-Update rule:
+Update rule: `next = (old & ~sw_clear) | hw_set`; hardware set wins over software clear on the same edge.
 
-`next = (old & ~sw_clear) | hw_set`
-
-Hardware set therefore wins over software clear on the same edge.
-
-## 15. Interrupt events
+## 16. Interrupt events
 
 INT_STATUS is sticky W1C; INT_ENABLE masks IRQ generation.
 
@@ -275,6 +219,10 @@ INT_STATUS is sticky W1C; INT_ENABLE masks IRQ generation.
 | 8 | EXCITATION_FAULT |
 | 9 | ILLEGAL_STATE |
 
-`irq_o = |(INT_STATUS & INT_ENABLE)`
+`irq_o = |(INT_STATUS & INT_ENABLE)`.
 
-The IP is GIC-facing at system level but does not implement GIC functionality.
+PMC is GIC-facing at system level but does not implement GIC functionality.
+
+## 17. Version
+
+`VERSION = 0x0002_0100` for V2.1.

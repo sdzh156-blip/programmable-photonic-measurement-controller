@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RTL = ROOT / "rtl"
 EXPECTED = [
     "sync2_level.sv",
+    "sync2_toggle_event.sv",
     "timing_engine.sv",
     "pulse_engine.sv",
     "apb_slave.sv",
@@ -52,8 +53,9 @@ if mods.get("photonic_ctrl_top.sv") != "photonic_ctrl_top":
     errors.append("top module name mismatch")
 
 critical = {
-    "rtl/photonic_csr.sv": ["A_CTRL", "A_INT_STATUS", "A_VERSION", "start_req_o", "error_status_q"],
-    "rtl/phase_sequencer.sv": ["start_accept", "ST_WAIT_EXC_READY", "ST_TRIGGER", "ST_WAIT_FRAME", "ST_WAIT_FRAME_CLEAR", "ST_SAFE_EXIT"],
+    "rtl/photonic_csr.sv": ["A_CTRL", "A_COMMAND", "A_DEVICE_STATUS", "A_VERSION", "start_req_o", "error_status_q"],
+    "rtl/phase_sequencer.sv": ["start_accept", "ST_WAIT_EXC_NOT_READY", "ST_WAIT_EXC_READY", "ST_TRIGGER", "ST_WAIT_FRAME", "ST_SAFE_EXIT"],
+    "rtl/sync2_toggle_event.sv": ["async_toggle_i", "sync_toggle_o", "event_o"],
     "rtl/irq_ctrl.sv": ["(status_q & ~sw_clear_i) | hw_set_i"],
 }
 for rel, needles in critical.items():
@@ -62,9 +64,15 @@ for rel, needles in critical.items():
         if needle not in text:
             errors.append(f"{rel}: missing critical construct {needle!r}")
 
+legacy_needles = ["ST_WAIT_FRAME_CLEAR", "sensor_frame_ack_o", "start_enable_value"]
+joined = "\n".join((RTL / name).read_text() for name in EXPECTED)
+for needle in legacy_needles:
+    if needle in joined:
+        errors.append(f"legacy V2.0 construct still present: {needle}")
+
 if errors:
     print("STATIC CHECK FAIL")
     for err in errors:
         print(" -", err)
     sys.exit(1)
-print("STATIC CHECK PASS: V2 RTL structure and critical constructs look consistent.")
+print("STATIC CHECK PASS: V2.1 RTL structure and critical constructs look consistent.")

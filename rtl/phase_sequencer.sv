@@ -9,7 +9,6 @@ module phase_sequencer #(
     input  logic                    enable_i,
     input  logic                    start_req_i,
     input  logic                    abort_req_i,
-    input  logic                    start_enable_value_i,
     input  logic [3:0]              prog_phase_count_i,
     input  logic [31:0]             prog_sensor_ready_timeout_i,
     input  logic [31:0]             prog_frame_timeout_i,
@@ -19,7 +18,7 @@ module phase_sequencer #(
     input  logic [PHASES*32-1:0]    prog_phase_time_flat_i,
 
     input  logic                    sensor_ready_i,
-    input  logic                    sensor_frame_done_i,
+    input  logic                    sensor_frame_done_event_i,
     input  logic                    sensor_error_i,
     input  logic                    excitation_ready_i,
     input  logic                    excitation_fault_i,
@@ -37,7 +36,6 @@ module phase_sequencer #(
 
     output logic                    excitation_enable_o,
     output logic                    sensor_trigger_o,
-    output logic                    sensor_frame_ack_o,
     output logic                    frame_tag_valid_o,
     output logic [1:0]              frame_type_o,
     output logic [31:0]             measurement_id_o,
@@ -58,12 +56,12 @@ module phase_sequencer #(
     typedef enum logic [3:0] {
         ST_IDLE,
         ST_LOAD_PHASE,
+        ST_WAIT_EXC_NOT_READY,
         ST_WAIT_EXC_READY,
         ST_SETTLE,
         ST_WAIT_SENSOR_READY,
         ST_TRIGGER,
         ST_WAIT_FRAME,
-        ST_WAIT_FRAME_CLEAR,
         ST_WAIT_ONLY,
         ST_PHASE_ADVANCE,
         ST_SAFE_EXIT
@@ -79,7 +77,6 @@ module phase_sequencer #(
     logic [2:0]              phase_index_q, phase_index_d;
     logic [7:0]              frame_index_q, frame_index_d;
     logic                    excitation_enable_q, excitation_enable_d;
-    logic                    frame_last_q, frame_last_d;
 
     logic [3:0]              active_phase_count_q, active_phase_count_d;
     logic [31:0]             active_sensor_ready_timeout_q, active_sensor_ready_timeout_d;
@@ -99,8 +96,7 @@ module phase_sequencer #(
     logic has_signal_phase;
     logic start_accept;
     logic start_config_error;
-    logic start_cmd_reject;
-    logic start_enable_effective;
+    logic cmd_reject;
     logic hard_fault;
     logic more_frames;
     logic more_phases;
@@ -149,9 +145,7 @@ module phase_sequencer #(
                             config_valid = 1'b0;
                         end
                     end
-                    default: begin
-                        config_valid = 1'b0;
-                    end
+                    default: config_valid = 1'b0;
                 endcase
             end
         end
@@ -173,53 +167,51 @@ module phase_sequencer #(
         end
     end
 
-    assign hard_fault             = sensor_error_i || excitation_fault_i;
-    assign start_enable_effective = start_req_i ? start_enable_value_i : enable_i;
-    assign start_accept           = start_req_i && !abort_req_i && !busy_q &&
-                                    (state_q == ST_IDLE) && start_enable_effective &&
-                                    !hard_fault && config_valid;
-    assign start_config_error     = start_req_i && !abort_req_i && !busy_q &&
-                                    (state_q == ST_IDLE) && start_enable_effective &&
-                                    !hard_fault && !config_valid;
-    assign start_cmd_reject       = start_req_i && !start_accept && !start_config_error;
+    assign hard_fault         = sensor_error_i || excitation_fault_i;
+    assign start_accept       = start_req_i && !abort_req_i && !busy_q &&
+                                (state_q == ST_IDLE) && enable_i &&
+                                !hard_fault && config_valid;
+    assign start_config_error = start_req_i && !abort_req_i && !busy_q &&
+                                (state_q == ST_IDLE) && enable_i &&
+                                !hard_fault && !config_valid;
+    assign cmd_reject         = (start_req_i && !start_accept && !start_config_error) ||
+                                (abort_req_i && !busy_q);
 
     assign more_frames = ({1'b0, frame_index_q} + 9'd1) < {1'b0, current_frame_count};
     assign more_phases = ({1'b0, phase_index_q} + 4'd1) < active_phase_count_q;
 
     always_comb begin
-        state_d                             = state_q;
-        busy_d                              = busy_q;
-        done_d                              = done_q;
-        aborted_d                           = aborted_q;
-        failed_d                            = failed_q;
-        measurement_id_d                    = measurement_id_q;
-        phase_index_d                       = phase_index_q;
-        frame_index_d                       = frame_index_q;
-        excitation_enable_d                 = excitation_enable_q;
-        frame_last_d                        = frame_last_q;
-        active_phase_count_d                = active_phase_count_q;
-        active_sensor_ready_timeout_d       = active_sensor_ready_timeout_q;
-        active_frame_timeout_d              = active_frame_timeout_q;
-        active_excitation_ready_timeout_d   = active_excitation_ready_timeout_q;
-        active_trigger_width_d              = active_trigger_width_q;
-        active_phase_cfg_flat_d             = active_phase_cfg_flat_q;
-        active_phase_time_flat_d            = active_phase_time_flat_q;
+        state_d                           = state_q;
+        busy_d                            = busy_q;
+        done_d                            = done_q;
+        aborted_d                         = aborted_q;
+        failed_d                          = failed_q;
+        measurement_id_d                  = measurement_id_q;
+        phase_index_d                     = phase_index_q;
+        frame_index_d                     = frame_index_q;
+        excitation_enable_d               = excitation_enable_q;
+        active_phase_count_d              = active_phase_count_q;
+        active_sensor_ready_timeout_d     = active_sensor_ready_timeout_q;
+        active_frame_timeout_d            = active_frame_timeout_q;
+        active_excitation_ready_timeout_d = active_excitation_ready_timeout_q;
+        active_trigger_width_d            = active_trigger_width_q;
+        active_phase_cfg_flat_d           = active_phase_cfg_flat_q;
+        active_phase_time_flat_d          = active_phase_time_flat_q;
 
-        timer_start_o       = 1'b0;
-        timer_stop_o        = 1'b0;
-        timer_load_o        = 32'd0;
-        trigger_start_o     = 1'b0;
-        trigger_stop_o      = 1'b0;
-        trigger_width_o     = active_trigger_width_q;
-        sensor_frame_ack_o  = 1'b0;
-        error_set_o         = 8'd0;
-        int_set_o           = 10'd0;
+        timer_start_o   = 1'b0;
+        timer_stop_o    = 1'b0;
+        timer_load_o    = 32'd0;
+        trigger_start_o = 1'b0;
+        trigger_stop_o  = 1'b0;
+        trigger_width_o = active_trigger_width_q;
+        error_set_o     = 8'd0;
+        int_set_o       = 10'd0;
 
         if (start_config_error) begin
             error_set_o[0] = 1'b1;
             int_set_o[2]   = 1'b1;
         end
-        if (start_cmd_reject) begin
+        if (cmd_reject) begin
             error_set_o[1] = 1'b1;
             int_set_o[3]   = 1'b1;
         end
@@ -263,7 +255,6 @@ module phase_sequencer #(
                         measurement_id_d                  = measurement_id_q + 32'd1;
                         phase_index_d                     = 3'd0;
                         frame_index_d                     = 8'd0;
-                        frame_last_d                      = 1'b0;
                         active_phase_count_d              = prog_phase_count_i;
                         active_sensor_ready_timeout_d     = prog_sensor_ready_timeout_i;
                         active_frame_timeout_d            = prog_frame_timeout_i;
@@ -292,10 +283,12 @@ module phase_sequencer #(
                         end
 
                         PHASE_SIGNAL: begin
-                            excitation_enable_d = 1'b1;
+                            // Re-arm every SIGNAL phase: first prove READY has returned low,
+                            // then assert enable and wait for a fresh READY-high qualification.
+                            excitation_enable_d = 1'b0;
                             timer_start_o        = 1'b1;
                             timer_load_o         = active_excitation_ready_timeout_q;
-                            state_d              = ST_WAIT_EXC_READY;
+                            state_d              = ST_WAIT_EXC_NOT_READY;
                         end
 
                         PHASE_WAIT: begin
@@ -318,6 +311,22 @@ module phase_sequencer #(
                             state_d             = ST_SAFE_EXIT;
                         end
                     endcase
+                end
+
+                ST_WAIT_EXC_NOT_READY: begin
+                    if (!excitation_ready_i) begin
+                        excitation_enable_d = 1'b1;
+                        timer_start_o        = 1'b1;
+                        timer_load_o         = active_excitation_ready_timeout_q;
+                        state_d              = ST_WAIT_EXC_READY;
+                    end else if (timer_done_i) begin
+                        busy_d              = 1'b0;
+                        failed_d            = 1'b1;
+                        excitation_enable_d = 1'b0;
+                        error_set_o[5]      = 1'b1;
+                        int_set_o[7]        = 1'b1;
+                        state_d             = ST_SAFE_EXIT;
+                    end
                 end
 
                 ST_WAIT_EXC_READY: begin
@@ -373,19 +382,17 @@ module phase_sequencer #(
                 end
 
                 ST_WAIT_FRAME: begin
-                    if (sensor_frame_done_i) begin
-                        sensor_frame_ack_o = 1'b1;
-                        timer_stop_o       = 1'b1;
-                        frame_last_d       = !more_frames;
+                    if (sensor_frame_done_event_i) begin
+                        timer_stop_o = 1'b1;
                         if (more_frames) begin
                             frame_index_d = frame_index_q + 8'd1;
+                            timer_start_o = 1'b1;
+                            timer_load_o  = active_sensor_ready_timeout_q;
+                            state_d       = ST_WAIT_SENSOR_READY;
                         end else begin
                             excitation_enable_d = 1'b0;
+                            state_d             = ST_PHASE_ADVANCE;
                         end
-                        // Wait until the synchronized DONE level returns low before
-                        // arming the next frame. This prevents a stale level from
-                        // being consumed as completion of the following trigger.
-                        state_d = ST_WAIT_FRAME_CLEAR;
                     end else if (timer_done_i) begin
                         busy_d              = 1'b0;
                         failed_d            = 1'b1;
@@ -393,19 +400,6 @@ module phase_sequencer #(
                         error_set_o[3]      = 1'b1;
                         int_set_o[5]        = 1'b1;
                         state_d             = ST_SAFE_EXIT;
-                    end
-                end
-
-                ST_WAIT_FRAME_CLEAR: begin
-                    if (!sensor_frame_done_i) begin
-                        if (frame_last_q) begin
-                            frame_last_d = 1'b0;
-                            state_d      = ST_PHASE_ADVANCE;
-                        end else begin
-                            timer_start_o = 1'b1;
-                            timer_load_o  = active_sensor_ready_timeout_q;
-                            state_d       = ST_WAIT_SENSOR_READY;
-                        end
                     end
                 end
 
@@ -456,41 +450,39 @@ module phase_sequencer #(
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
-            state_q                            <= ST_IDLE;
-            busy_q                             <= 1'b0;
-            done_q                             <= 1'b0;
-            aborted_q                          <= 1'b0;
-            failed_q                           <= 1'b0;
-            measurement_id_q                   <= 32'd0;
-            phase_index_q                      <= 3'd0;
-            frame_index_q                      <= 8'd0;
-            excitation_enable_q                <= 1'b0;
-            frame_last_q                       <= 1'b0;
-            active_phase_count_q               <= 4'd0;
-            active_sensor_ready_timeout_q      <= 32'd0;
-            active_frame_timeout_q             <= 32'd0;
-            active_excitation_ready_timeout_q  <= 32'd0;
-            active_trigger_width_q             <= 16'd1;
-            active_phase_cfg_flat_q            <= '0;
-            active_phase_time_flat_q           <= '0;
+            state_q                           <= ST_IDLE;
+            busy_q                            <= 1'b0;
+            done_q                            <= 1'b0;
+            aborted_q                         <= 1'b0;
+            failed_q                          <= 1'b0;
+            measurement_id_q                  <= 32'd0;
+            phase_index_q                     <= 3'd0;
+            frame_index_q                     <= 8'd0;
+            excitation_enable_q               <= 1'b0;
+            active_phase_count_q              <= 4'd0;
+            active_sensor_ready_timeout_q     <= 32'd0;
+            active_frame_timeout_q            <= 32'd0;
+            active_excitation_ready_timeout_q <= 32'd0;
+            active_trigger_width_q            <= 16'd1;
+            active_phase_cfg_flat_q           <= '0;
+            active_phase_time_flat_q          <= '0;
         end else begin
-            state_q                            <= state_d;
-            busy_q                             <= busy_d;
-            done_q                             <= done_d;
-            aborted_q                          <= aborted_d;
-            failed_q                           <= failed_d;
-            measurement_id_q                   <= measurement_id_d;
-            phase_index_q                      <= phase_index_d;
-            frame_index_q                      <= frame_index_d;
-            excitation_enable_q                <= excitation_enable_d;
-            frame_last_q                       <= frame_last_d;
-            active_phase_count_q               <= active_phase_count_d;
-            active_sensor_ready_timeout_q      <= active_sensor_ready_timeout_d;
-            active_frame_timeout_q             <= active_frame_timeout_d;
-            active_excitation_ready_timeout_q  <= active_excitation_ready_timeout_d;
-            active_trigger_width_q             <= active_trigger_width_d;
-            active_phase_cfg_flat_q            <= active_phase_cfg_flat_d;
-            active_phase_time_flat_q           <= active_phase_time_flat_d;
+            state_q                           <= state_d;
+            busy_q                            <= busy_d;
+            done_q                            <= done_d;
+            aborted_q                         <= aborted_d;
+            failed_q                          <= failed_d;
+            measurement_id_q                  <= measurement_id_d;
+            phase_index_q                     <= phase_index_d;
+            frame_index_q                     <= frame_index_d;
+            excitation_enable_q               <= excitation_enable_d;
+            active_phase_count_q              <= active_phase_count_d;
+            active_sensor_ready_timeout_q     <= active_sensor_ready_timeout_d;
+            active_frame_timeout_q            <= active_frame_timeout_d;
+            active_excitation_ready_timeout_q <= active_excitation_ready_timeout_d;
+            active_trigger_width_q            <= active_trigger_width_d;
+            active_phase_cfg_flat_q           <= active_phase_cfg_flat_d;
+            active_phase_time_flat_q          <= active_phase_time_flat_d;
         end
     end
 
